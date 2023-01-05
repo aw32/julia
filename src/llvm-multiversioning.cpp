@@ -255,21 +255,14 @@ struct CloneCtx {
     void emit_metadata();
 private:
     void prepare_vmap(ValueToValueMapTy &vmap);
-    bool is_vector(FunctionType *ty) const;
     void clone_function(Function *F, Function *new_f, ValueToValueMapTy &vmap);
     uint32_t collect_func_info(Function &F);
     void check_partial(Group &grp, Target &tgt);
     void clone_partial(Group &grp, Target &tgt);
-    void add_features(Function *F, StringRef name, StringRef features, uint32_t flags) const;
-    template<typename T>
-    T *add_comdat(T *G) const;
     uint32_t get_func_id(Function *F);
     template<typename Stack>
     Constant *rewrite_gv_init(const Stack& stack);
     std::pair<uint32_t,GlobalVariable*> get_reloc_slot(Function *F);
-    Constant *get_ptrdiff32(Constant *ptr, Constant *base) const;
-    template<typename T>
-    Constant *emit_offset_table(const std::vector<T*> &vars, StringRef name) const;
     void rewrite_alias(GlobalAlias *alias, Function* F);
 
     MDNode *tbaa_const;
@@ -426,7 +419,7 @@ void CloneCtx::clone_bases()
     }
 }
 
-bool CloneCtx::is_vector(FunctionType *ty) const
+static bool is_vector(FunctionType *ty)
 {
     if (ty->getReturnType()->isVectorTy())
         return true;
@@ -507,6 +500,29 @@ void CloneCtx::collect_func_infos()
     func_infos.resize(nfuncs);
     for (uint32_t i = 0; i < nfuncs; i++) {
         func_infos[i] = collect_func_info(*orig_funcs[i]);
+    }
+}
+
+static void add_features(Function *F, StringRef name, StringRef features, uint32_t flags)
+{
+    auto attr = F->getFnAttribute("target-features");
+    if (attr.isStringAttribute()) {
+        std::string new_features(attr.getValueAsString());
+        new_features += ",";
+        new_features += features;
+        F->addFnAttr("target-features", new_features);
+    }
+    else {
+        F->addFnAttr("target-features", features);
+    }
+    F->addFnAttr("target-cpu", name);
+    if (!F->hasFnAttribute(Attribute::OptimizeNone)) {
+        if (flags & JL_TARGET_OPTSIZE) {
+            F->addFnAttr(Attribute::OptimizeForSize);
+        }
+        else if (flags & JL_TARGET_MINSIZE) {
+            F->addFnAttr(Attribute::MinSize);
+        }
     }
 }
 
@@ -631,29 +647,6 @@ void CloneCtx::clone_partial(Group &grp, Target &tgt)
             // We can set the feature strings now since no one is going to
             // clone these functions again.
             add_features(new_f, spec.cpu_name, spec.cpu_features, spec.flags);
-        }
-    }
-}
-
-void CloneCtx::add_features(Function *F, StringRef name, StringRef features, uint32_t flags) const
-{
-    auto attr = F->getFnAttribute("target-features");
-    if (attr.isStringAttribute()) {
-        std::string new_features(attr.getValueAsString());
-        new_features += ",";
-        new_features += features;
-        F->addFnAttr("target-features", new_features);
-    }
-    else {
-        F->addFnAttr("target-features", features);
-    }
-    F->addFnAttr("target-cpu", name);
-    if (!F->hasFnAttribute(Attribute::OptimizeNone)) {
-        if (flags & JL_TARGET_OPTSIZE) {
-            F->addFnAttr(Attribute::OptimizeForSize);
-        }
-        else if (flags & JL_TARGET_MINSIZE) {
-            F->addFnAttr(Attribute::MinSize);
         }
     }
 }
@@ -881,7 +874,7 @@ void CloneCtx::fix_inst_uses()
 }
 
 template<typename T>
-inline T *CloneCtx::add_comdat(T *G) const
+static inline T *add_comdat(T *G)
 {
 #if defined(_OS_WINDOWS_)
     // add __declspec(dllexport) to everything marked for export
@@ -893,7 +886,7 @@ inline T *CloneCtx::add_comdat(T *G) const
     return G;
 }
 
-Constant *CloneCtx::get_ptrdiff32(Constant *ptr, Constant *base) const
+static Constant *get_ptrdiff32(Constant *ptr, Constant *base)
 {
     if (ptr->getType()->isPointerTy())
         ptr = ConstantExpr::getPtrToInt(ptr, getSizeTy(ptr->getContext()));
@@ -902,7 +895,7 @@ Constant *CloneCtx::get_ptrdiff32(Constant *ptr, Constant *base) const
 }
 
 template<typename T>
-Constant *CloneCtx::emit_offset_table(const std::vector<T*> &vars, StringRef name) const
+static Constant *emit_offset_table(Module &M, const std::vector<T*> &vars, StringRef name)
 {
     auto T_int32 = Type::getInt32Ty(M.getContext());
     auto T_size = getSizeTy(M.getContext());
@@ -914,7 +907,7 @@ Constant *CloneCtx::emit_offset_table(const std::vector<T*> &vars, StringRef nam
                                        name + "_base",
                                        base, &M));
     } else {
-        base = ConstantExpr::getNullValue(T_size->getPointerTo());
+        base = add_comdat(new GlobalVariable(M, T_size, true, GlobalValue::ExternalLinkage, Constant::getNullValue(T_size), name + "_base"));
     }
     auto vbase = ConstantExpr::getPtrToInt(base, T_size);
     std::vector<Constant*> offsets(nvars + 1);
@@ -941,8 +934,8 @@ void CloneCtx::emit_metadata()
     }
 
     // Store back the information about exported functions.
-    auto fbase = emit_offset_table(fvars, "jl_sysimg_fvars");
-    auto gbase = emit_offset_table(gvars, "jl_sysimg_gvars");
+    auto fbase = emit_offset_table(M, fvars, "jl_sysimg_fvars");
+    auto gbase = emit_offset_table(M, gvars, "jl_sysimg_gvars");
 
     uint32_t ntargets = specs.size();
     SmallVector<Target*, 8> targets(ntargets);
