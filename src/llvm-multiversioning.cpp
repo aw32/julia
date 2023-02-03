@@ -404,8 +404,6 @@ static inline std::vector<T*> consume_gv(Module &M, const char *name, bool allow
     // Strip them from the Module so that it's easier to handle the uses.
     GlobalVariable *gv = M.getGlobalVariable(name);
     assert(gv && gv->hasInitializer());
-    dbgs() << "Consume " << *gv << ":\n";
-    dbgs() << *gv->getType() << "\n";
     ArrayType *Ty = cast<ArrayType>(gv->getInitializer()->getType());
     unsigned nele = Ty->getArrayNumElements();
     std::vector<T*> res(nele);
@@ -424,7 +422,6 @@ static inline std::vector<T*> consume_gv(Module &M, const char *name, bool allow
                 nele--;
                 continue;
             }
-            dbgs() << *val << ": " << *val->getType() << "\n";
             res[i++] = cast<T>(val);
         }
         res.resize(nele);
