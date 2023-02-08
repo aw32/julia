@@ -1104,18 +1104,18 @@ mutable struct ExtensionId
     ntriggers::Int # how many more packages must be defined until this is loaded
 end
 
-const EXT_DORMITORY = Dict{PkgId,Vector{ExtensionId}}()
+const EXT_PRIMED = Set{PkgId}()
+const EXT_DORMITORY = Dict{PkgId,Vector{ExtensionId}}() # Trigger -> Extensions that can be triggered by it
 const EXT_DORMITORY_FAILED = ExtensionId[]
 
 function insert_extension_triggers(pkg::PkgId)
     pkg.uuid === nothing && return
-    extensions_added = Set{PkgId}()
     for env in load_path()
-        insert_extension_triggers!(extensions_added, env, pkg)
+        insert_extension_triggers(env, pkg)
     end
 end
 
-function insert_extension_triggers!(extensions_added::Set{PkgId}, env::String, pkg::PkgId)::Union{Nothing,Missing}
+function insert_extension_triggers(env::String, pkg::PkgId)::Union{Nothing,Missing}
     project_file = env_project_file(env)
     if project_file isa String
         manifest_file = project_file_manifest_path(project_file)
@@ -1133,7 +1133,7 @@ function insert_extension_triggers!(extensions_added::Set{PkgId}, env::String, p
                     extensions === nothing && return
                     weakdeps === nothing && return
                     if weakdeps isa Dict{String, Any}
-                        return _insert_extension_triggers!(extensions_added, pkg, extensions, weakdeps)
+                        return _insert_extension_triggers(pkg, extensions, weakdeps)
                     end
 
                     d_weakdeps = Dict{String, String}()
@@ -1148,7 +1148,7 @@ function insert_extension_triggers!(extensions_added::Set{PkgId}, env::String, p
                         d_weakdeps[dep_name] = uuid
                     end
                     @assert length(d_weakdeps) == length(weakdeps)
-                    return _insert_extension_triggers!(extensions_added, pkg, extensions, d_weakdeps)
+                    return _insert_extension_triggers(pkg, extensions, d_weakdeps)
                 end
             end
         end
@@ -1156,13 +1156,12 @@ function insert_extension_triggers!(extensions_added::Set{PkgId}, env::String, p
     return nothing
 end
 
-function _insert_extension_triggers!(extensions_added::Set{PkgId}, parent::PkgId, extensions::Dict{String, <:Any}, weakdeps::Dict{String, <:Any})
+function _insert_extension_triggers(parent::PkgId, extensions::Dict{String, <:Any}, weakdeps::Dict{String, <:Any})
     for (ext::String, triggers::Union{String, Vector{String}}) in extensions
         triggers isa String && (triggers = [triggers])
         id = PkgId(uuid5(parent.uuid, ext), ext)
-        # Only add triggers for an extension from one env.
-        id in extensions_added && continue
-        push!(extensions_added, id)
+        id in EXT_PRIMED && continue # extension is already primed, don't add it again
+        push!(EXT_PRIMED, id)
         gid = ExtensionId(id, parent, 1 + length(triggers))
         trigger1 = get!(Vector{ExtensionId}, EXT_DORMITORY, parent)
         push!(trigger1, gid)
